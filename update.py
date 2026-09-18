@@ -1,66 +1,80 @@
-import os, re, shutil, subprocess, time, sys
+import os, re, json, shutil, subprocess, time, sys
 D = "/opt/agent-panel"
 rep = []
 mp = os.path.join(D, "main.py")
+pp = os.path.join(D, "page.html")
 shutil.copy2(mp, "/tmp/main.py.preupd")
 s = open(mp, errors="ignore").read()
 orig = s
 
-# 1) пустой проект: движок сам создаёт первый файл с нуля
+# 1) страница отдаётся с живой версией {{VER}}
+a = '@app.get("/", response_class=HTMLResponse)\ndef index(): return open(PAGE_FILE, errors="ignore").read()'
+b = '@app.get("/", response_class=HTMLResponse)\ndef index():\n    h = open(PAGE_FILE, errors="ignore").read()\n    return h.replace("{{VER}}", SETTINGS.get("gh_ver", "v13"))'
+if '{{VER}}' not in s and a in s:
+    s = s.replace(a, b, 1); rep.append("main: живая версия в шапке")
+
+# 2) /api/gh: сохранённый адрес + токен + итог последнего обновления
+if '@app.get("/api/gh")' not in s and '@app.get("/api/tasks")' in s:
+    s = s.replace('@app.get("/api/tasks")',
+        '@app.get("/api/gh")\ndef api_gh():\n    return {"url": SETTINGS.get("gh_url", ""), "token": SETTINGS.get("gh_token", ""), "gh_last": SETTINGS.get("gh_last")}\n\n@app.get("/api/tasks")', 1)
+    rep.append("main: /api/gh")
+
+# 3) запоминать адрес/токен при каждом протягивании
+a3 = '    if not url.startswith("https://"): return JSONResponse({"error": "need https:// raw-URL"}, 400)'
+if 'SETTINGS["gh_url"]' not in s and a3 in s:
+    s = s.replace(a3, a3 + '\n    SETTINGS["gh_url"] = url; SETTINGS["gh_token"] = token; save_settings()', 1)
+    rep.append("main: адрес и токен сохраняются")
+
+# 4) запоминать итог каждого обновления
+a4 = '    r = subprocess.run([sys.executable, os.path.join(DIR, "update_recv.py")], capture_output=True, text=True, cwd=DIR)'
+if 'SETTINGS["gh_last"]' not in s and a4 in s:
+    s = s.replace(a4, a4 + '\n    SETTINGS["gh_last"] = {"ts": time.time(), "msg": ("OK: " if r.returncode == 0 else "FAIL: ") + (r.stdout + r.stderr)[-150:]}\n    save_settings()', 1)
+    rep.append("main: итог обновления сохраняется")
+
+# 5) пустой проект создаётся с нуля (если ещё нет)
 anchor = '        names_order = sorted(contents.keys(),'
 seed = '''        if not contents:
             default = "index.html" if any(w in t["task"].lower() for w in ("игр", "сайт", "ленд", "админ", "html", "симул", "game")) else "main.py"
             contents = {os.path.join(pdir, default): ""}
             log.append("проект пуст: создаю " + default + " с нуля")
         names_order = sorted(contents.keys(),'''
-if 'проект пуст: создаю' not in s:
-    if anchor in s:
-        s = s.replace(anchor, seed, 1); rep.append("пустой проект: создание с нуля")
-    else:
-        rep.append("ВНИМАНИЕ: якорь names_order не найден")
-
-# 2) промпт для файла, которого ещё нет (одинарные кавычки внутри f-string!)
-pat = r'f"\\nТекущее полное содержимое файла \{rel\}:\\n```\\n\{contents\[f\]\}\\n```\\n"'
-new = '(f"\\nТекущее полное содержимое файла {rel}:\\n```\\n{others.get(f, chr(39)+chr(39))}\\n```\\n" if others.get(f) else f"\\nФайла {rel} ещё нет — создай его с нуля, целым и рабочим.\\n")'
-s2 = re.sub(pat, lambda m: new, s, count=1)
-if s2 != s:
-    s = s2; rep.append("промпт: файла ещё нет — создай")
-
-# 3) защита рабочих проектов от переписывания
-old = '\\n\\nРаботай автономно, не задавай вопросов.\\n'
-newr = old + 'ВАЖНО: если в проекте уже есть рабочие файлы — вноси ТОЛЬКО точечные правки, сохраняя все существующие механики, интерфейс и структуру. Полное переписывание с нуля запрещено, если задача не просит об этом прямо.\\n'
-if 'Полное переписывание с нуля запрещено' not in s and old in s:
-    s = s.replace(old, newr, 1); rep.append("защита от переписывания рабочих проектов")
-
-# 4) золотые копии каждого записанного файла
-oldw = '            open(f, "w").write(c)\n            others[f] = c'
-neww = '            open(f, "w").write(c)\n            try:\n                gd = os.path.join(pdir, ".golden"); os.makedirs(gd, exist_ok=True)\n                shutil.copy2(f, os.path.join(gd, os.path.basename(f)))\n            except Exception: pass\n            others[f] = c'
-if '.golden", os.path.basename' not in s and oldw in s:
-    s = s.replace(oldw, neww, 1); rep.append("золотые копии файлов")
-
-# 5) .golden не попадает в обход проекта
-oldd = '".aider.tags.cache.v4", "node_modules"'
-newd = '".aider.tags.cache.v4", "node_modules", ".golden"'
-if '".golden"' not in s and oldd in s:
-    s = s.replace(oldd, newd, 1); rep.append(".golden исключён из обхода")
+if 'проект пуст: создаю' not in s and anchor in s:
+    s = s.replace(anchor, seed, 1); rep.append("пустой проект: создание с нуля")
 
 if s != orig:
     open(mp, "w").write(s)
 
-# САМОПРОВЕРКА: битый синтаксис = откат копии, панель стартует на старом коде
+# 6) страница: метка версии becomes {{VER}} + мини-скрипт подстановки адреса (без якорей)
+pg = open(pp, errors="ignore").read()
+o = pg
+pg = re.sub(r'панель агента · [^<]*</span>', 'панель агента · {{VER}}</span>', pg, count=1)
+if 'fetch(/api/gh)' not in pg:
+    k = pg.rfind('</body>')
+    pg = pg[:k] + '<script>\nfetch(\'/api/gh\').then(r=>r.json()).then(g=>{\nconst u=document.getElementById(\'ghurl\'),t=document.getElementById(\'ghtoken\');\nif(u&&g.url)u.value=g.url; if(t&&g.token)t.value=g.token;\n}).catch(e=>{});\n</script>\n' + pg[k:]
+if pg != o:
+    open(pp, "w").write(pg); rep.append("page: живая версия + автоподстановка адреса")
+
+# 7) номер версии в settings
+sp = os.path.join(D, "settings.json")
+st = {}
+try: st = json.load(open(sp))
+except Exception: pass
+st["gh_ver"] = "v17"
+json.dump(st, open(sp, "w"))
+rep.append("settings: gh_ver=v17")
+
+# САМОПРОВЕРКА
 r = subprocess.run([sys.executable, "-m", "py_compile", mp], capture_output=True, text=True)
 if r.returncode != 0:
     shutil.copy2("/tmp/main.py.preupd", mp)
-    print("ЧТО СДЕЛАНО:")
-    print("\n".join(rep))
-    print("UPDATE FAIL: синтаксис бит — main.py восстановлен из копии, панель поднимется на старом коде")
-    print(r.stderr[-500:])
+    print("ЧТО СДЕЛАНО:"); print("\n".join(rep))
+    print("UPDATE FAIL: синтаксис бит — main.py восстановлен, панель на старом коде")
+    print(r.stderr[-400:])
     raise SystemExit(1)
 
 with open(os.path.join(D, "CHANGELOG.md"), "a") as f:
-    f.write("\n### " + time.strftime("%d.%m %H:%M") + " — github-обновление\nv16: " + "; ".join(rep or ["всё уже было на месте"]) + "\n")
+    f.write("\n### " + time.strftime("%d.%m %H:%M") + " — github-обновление\nv17: " + "; ".join(rep) + "\n")
 subprocess.run(["git", "add", "-A"], cwd=D)
-subprocess.run(["git", "commit", "-m", "update from github: v16 safe create-from-scratch"], cwd=D)
-print("ЧТО СДЕЛАНО:")
-print("\n".join(rep or ["всё уже было на месте — проверено"]))
-print("UPDATE OK: v16")
+subprocess.run(["git", "commit", "-m", "update from github: v17 live version + remembered source"], cwd=D)
+print("ЧТО СДЕЛАНО:"); print("\n".join(rep))
+print("UPDATE OK: v17")
