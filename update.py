@@ -19,26 +19,26 @@ if 'проект пуст: создаю' not in s:
     else:
         rep.append("ВНИМАНИЕ: якорь names_order не найден")
 
-# 2) промпт для файла, которого ещё нет
+# 2) промпт для файла, которого ещё нет (одинарные кавычки внутри f-string!)
 pat = r'f"\\nТекущее полное содержимое файла \{rel\}:\\n```\\n\{contents\[f\]\}\\n```\\n"'
-new = '(f"\\nТекущее полное содержимое файла {rel}:\\n```\\n{others.get(f, "")}\\n```\\n" if others.get(f) else f"\\nФайла {rel} ещё нет — создай его с нуля, целым и рабочим.\\n")'
+new = '(f"\\nТекущее полное содержимое файла {rel}:\\n```\\n{others.get(f, chr(39)+chr(39))}\\n```\\n" if others.get(f) else f"\\nФайла {rel} ещё нет — создай его с нуля, целым и рабочим.\\n")'
 s2 = re.sub(pat, lambda m: new, s, count=1)
 if s2 != s:
     s = s2; rep.append("промпт: файла ещё нет — создай")
 
-# 3) защита рабочих проектов от переписывания (если слетела при откатах)
+# 3) защита рабочих проектов от переписывания
 old = '\\n\\nРаботай автономно, не задавай вопросов.\\n'
 newr = old + 'ВАЖНО: если в проекте уже есть рабочие файлы — вноси ТОЛЬКО точечные правки, сохраняя все существующие механики, интерфейс и структуру. Полное переписывание с нуля запрещено, если задача не просит об этом прямо.\\n'
 if 'Полное переписывание с нуля запрещено' not in s and old in s:
     s = s.replace(old, newr, 1); rep.append("защита от переписывания рабочих проектов")
 
-# 4) золотые копии каждого записанного файла (если слетели)
+# 4) золотые копии каждого записанного файла
 oldw = '            open(f, "w").write(c)\n            others[f] = c'
 neww = '            open(f, "w").write(c)\n            try:\n                gd = os.path.join(pdir, ".golden"); os.makedirs(gd, exist_ok=True)\n                shutil.copy2(f, os.path.join(gd, os.path.basename(f)))\n            except Exception: pass\n            others[f] = c'
 if '.golden", os.path.basename' not in s and oldw in s:
     s = s.replace(oldw, neww, 1); rep.append("золотые копии файлов")
 
-# 5) .golden не попадает в обход проекта (если слетело)
+# 5) .golden не попадает в обход проекта
 oldd = '".aider.tags.cache.v4", "node_modules"'
 newd = '".aider.tags.cache.v4", "node_modules", ".golden"'
 if '".golden"' not in s and oldd in s:
@@ -58,9 +58,9 @@ if r.returncode != 0:
     raise SystemExit(1)
 
 with open(os.path.join(D, "CHANGELOG.md"), "a") as f:
-    f.write("\n### " + time.strftime("%d.%m %H:%M") + " — github-обновление\nv15: " + "; ".join(rep or ["всё уже было на месте"]) + "\n")
+    f.write("\n### " + time.strftime("%d.%m %H:%M") + " — github-обновление\nv16: " + "; ".join(rep or ["всё уже было на месте"]) + "\n")
 subprocess.run(["git", "add", "-A"], cwd=D)
-subprocess.run(["git", "commit", "-m", "update from github: v15 safe create-from-scratch"], cwd=D)
+subprocess.run(["git", "commit", "-m", "update from github: v16 safe create-from-scratch"], cwd=D)
 print("ЧТО СДЕЛАНО:")
 print("\n".join(rep or ["всё уже было на месте — проверено"]))
-print("UPDATE OK: v15")
+print("UPDATE OK: v16")
